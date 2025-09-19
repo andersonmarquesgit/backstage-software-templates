@@ -1,0 +1,139 @@
+name: ${{values.app_name}}-cicd
+
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - 'cmd/**'
+      - 'Dockerfile'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/ci.yml'
+  workflow_dispatch:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read  # necessário para metadata-action ler refs/labels
+    outputs:
+      image_tag: ${{ '${{ steps.imgtag.outputs.tag }}' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ '${{ secrets.DOCKERHUB_USERNAME }}' }}
+          password: ${{ '${{ secrets.DOCKERHUB_TOKEN }}' }}
+
+      # Gera tags e labels automaticamente (sha curto, nome do branch e latest no branch padrão)
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: andersonmarquesdocker/${{values.app_name}}
+          tags: |
+            type=sha,format=short
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Compute primary image tag
+        id: imgtag
+        run: echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            andersonmarquesdocker/${{values.app_name}}:${{ '${{ steps.imgtag.outputs.tag }}' }}
+            ${{ '${{ steps.meta.outputs.tags }}' }}
+          labels: ${{ '${{ steps.meta.outputs.labels }}' }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+  cd:
+    needs: ci
+    runs-on: self-hosted
+    permissions:
+      contents: write          # <-- necessário para commitar/pushar
+    env:
+      IMAGE_REPO: andersonmarquesdocker/${{values.app_name}}
+      IMAGE_TAG: ${{ '${{ needs.ci.outputs.image_tag }}' }}
+      CHART_PATH: charts/${{values.app_name}}
+      VALUES_FILE: charts/${{values.app_name}}/values-${{values.app_env}}.yaml
+
+    steps:
+      - name: Checkout repo (com credenciais p/ push)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # garante histórico completo p/ push
+          persist-credentials: true
+
+      - name: Install yq (no sudo)
+        shell: bash
+        run: |
+          YQ_VER=v4.44.3
+          YQ_URL="https://github.com/mikefarah/yq/releases/download/${{ '${YQ_VER}' }}/yq_linux_amd64"
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL "$YQ_URL" -o "$HOME/.local/bin/yq"
+          chmod +x "$HOME/.local/bin/yq"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Bump values-${{values.app_env}}.yaml with new image tag
+        shell: bash
+        run: |
+          yq -i '.image.tag = env(IMAGE_TAG)' charts/${{values.app_name}}/values-${{values.app_env}}.yaml
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add charts/${{values.app_name}}/values-${{values.app_env}}.yaml
+          git commit -m "bump image tag to ${{ '${IMAGE_TAG}' }}" || echo "Nothing to commit"
+          git push
+
+      - name: Commit & push (só se houve mudança)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- ${{ '${VALUES_FILE}' }}; then
+            echo "Sem mudanças no ${{ '${VALUES_FILE}' }}; pulando commit/push."
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add "${VALUES_FILE}"
+          git commit -m "ci: bump image to ${{ '${IMAGE_REPO}' }}:${{ '${IMAGE_TAG}' }} [skip ci]"
+          git push
+
+      - name: Install Argo CD CLI
+        shell: bash
+        run: |
+          curl -sSL -o /tmp/argocd \
+            https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          # instala em /usr/local/bin se tiver sudo; se não, cai para ~/.local/bin
+          install -m 0755 /tmp/argocd /usr/local/bin/argocd || {
+            mkdir -p "$HOME/.local/bin"
+            install -m 0755 /tmp/argocd "$HOME/.local/bin/argocd"
+            echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+            }
+
+      - name: Argo CD login + sync
+        shell: bash
+        run: |
+          # Service interno do cluster (porta 80, HTTP)
+          ARGOCD_SERVER="argocd-server.argocd.svc.cluster.local:80"
+          
+          argocd login "$ARGOCD_SERVER" \
+            --username admin \
+            --password '${{ '${{ secrets.ARGOCD_PASSWORD }}' }}' \
+            --grpc-web \
+            --plaintext
+          
+          # sincroniza e espera ficar saudável
+          argocd app sync ${{values.app_name}} --timeout 300
+          argocd app wait ${{values.app_name}} --health --timeout 300
