@@ -29,5 +29,3 @@ workspace.code-workspace
 .idea/wellpass.iml
 .idea/vcs.xml
 .idea/modules.xml
-provider-service/provider-service
-notification-service/notification-service
