@@ -2,13 +2,13 @@ name: ${{values.app_name}}-cicd
 
 on:
   push:
-    branches: [ master ]
+    branches: [ main ]
     paths:
       - 'cmd/**'
       - 'Dockerfile'
       - 'go.mod'
       - 'go.sum'
-      - '.github/workflows/ci.yml'
+      - '.github/workflows/${{values.app_name}}-cicd.yml'
   workflow_dispatch:
 
 jobs:
