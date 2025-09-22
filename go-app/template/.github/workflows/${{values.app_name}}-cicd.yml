@@ -86,43 +86,77 @@ jobs:
           chmod +x "$HOME/.local/bin/yq"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      - name: Bump values-${{values.app_env}}.yaml with new image tag
+      - name: Update values & push (rebase-safe)
         shell: bash
-        run: |
-          yq -i '.image.tag = env(IMAGE_TAG)' charts/${{values.app_name}}/values-${{values.app_env}}.yaml
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add charts/${{values.app_name}}/values-${{values.app_env}}.yaml
-          git commit -m "bump image tag to ${{ '${IMAGE_TAG}' }}" || echo "Nothing to commit"
-          git push
-
-      - name: Commit & push (só se houve mudança)
-        shell: bash
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: github-actions[bot]@users.noreply.github.com
+          BRANCH: ${{ github.ref_name }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          if git diff --quiet -- ${{ '${VALUES_FILE}' }}; then
-            echo "Sem mudanças no ${{ '${VALUES_FILE}' }}; pulando commit/push."
+          
+          # Garante que estamos na ponta mais recente do branch
+          git fetch origin "$BRANCH"
+          git checkout "$BRANCH"
+          git pull --rebase origin "$BRANCH"
+          
+          # Atualiza a tag da imagem
+          yq -i '.image.tag = env(IMAGE_TAG)' "${VALUES_FILE}"
+          
+          # Só commita/pusha se houve mudança
+          if git diff --quiet -- "${VALUES_FILE}"; then
+            echo "Sem mudanças em ${VALUES_FILE}; pulando push."
             exit 0
           fi
-
+          
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
           git add "${VALUES_FILE}"
-          git commit -m "ci: bump image to ${{ '${IMAGE_REPO}' }}:${{ '${IMAGE_TAG}' }} [skip ci]"
-          git push
+          git commit -m "chore(cd): bump image to ${IMAGE_REPO}:${IMAGE_TAG} [skip ci]"
+          
+          # Garante que o push use o token (útil em runners self-hosted)
+          git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
+          
+          git push origin "HEAD:${BRANCH}"
 
       - name: Install Argo CD CLI
         shell: bash
         run: |
-          curl -sSL -o /tmp/argocd \
-            https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
-          # instala em /usr/local/bin se tiver sudo; se não, cai para ~/.local/bin
-          install -m 0755 /tmp/argocd /usr/local/bin/argocd || {
+          set -euo pipefail
+          curl -fsSL -o /tmp/argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          chmod +x /tmp/argocd
+          # tenta /usr/local/bin, se não puder, usa ~/.local/bin
+          install -m 0755 /tmp/argocd /usr/local/bin/argocd 2>/dev/null || {
             mkdir -p "$HOME/.local/bin"
             install -m 0755 /tmp/argocd "$HOME/.local/bin/argocd"
             echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-            }
+          }
+          argocd version --client
+          
+      - name: Criar Application no Argo CD (se não existir)
+        shell: bash
+        env:
+          APP_NAME: ${{ github.event.repository.name }}            # ex: go-app-backstage-4
+          CHART_PATH: ${{ env.CHART_PATH }}                        # ex: charts/go-app-backstage-4
+        run: |
+          set -euo pipefail
+
+          # Tenta obter; se falhar, cria
+          if ! argocd app get "$APP_NAME" >/dev/null 2>&1; then
+            echo "Application $APP_NAME não existe. Criando…"
+            argocd app create "$APP_NAME" \
+              --repo "https://github.com/${{ github.repository }}.git" \
+              --path "$CHART_PATH" \
+              --revision main \
+              --dest-server https://kubernetes.default.svc \
+              --dest-namespace devops \
+              --project default
+          else
+            echo "Application $APP_NAME já existe."
+          fi
 
       - name: Argo CD login + sync
         shell: bash
