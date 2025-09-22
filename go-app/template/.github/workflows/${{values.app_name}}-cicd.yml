@@ -15,9 +15,11 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     permissions:
-      contents: read  # necessário para metadata-action ler refs/labels
+      contents: read
     outputs:
-      image_tag: ${{ '${{ steps.imgtag.outputs.tag }}' }}
+      # EXPÕE os valores calculados no passo "imgtag"
+      image_tag: ${{ '${{ steps.imgtag.outputs.env }}' }}
+      sha_tag:   ${{ '${{ steps.imgtag.outputs.sha }}' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -41,39 +43,46 @@ jobs:
             type=ref,event=branch
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Compute primary image tag
+      # Calcula as tags "imutável" (sha) e "de ambiente" (<app>-<env>-latest)
+      - name: Compute tags we will push
         id: imgtag
-        run: echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "sha=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "env=${{values.app_name}}-${{values.app_env}}-latest" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v6   # << fix do typo
         with:
           context: .
           push: true
           tags: |
-            andersonmarquesdocker/${{values.app_name}}:${{ '${{ steps.imgtag.outputs.tag }}' }}
+            andersonmarquesdocker/${{values.app_name}}:${{ '${{ steps.imgtag.outputs.sha }}' }}
+            andersonmarquesdocker/${{values.app_name}}:${{ '${{ steps.imgtag.outputs.env }}' }}
             ${{ '${{ steps.meta.outputs.tags }}' }}
           labels: ${{ '${{ steps.meta.outputs.labels }}' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
   cd:
     needs: ci
     runs-on:
-       group: Default
-       labels: [self-hosted, Linux, X64]
+      group: Default
+      labels: [self-hosted, Linux, X64]
     permissions:
-      contents: write          # <-- necessário para commitar/pushar
+      contents: write
     env:
       IMAGE_REPO: andersonmarquesdocker/${{values.app_name}}
+      # CONSUME o output do job "ci"
       IMAGE_TAG: ${{ '${{ needs.ci.outputs.image_tag }}' }}
       CHART_PATH: charts/${{values.app_name}}
       VALUES_FILE: charts/${{values.app_name}}/values-${{values.app_env}}.yaml
+      ARGOCD_SERVER: argocd-server.argocd.svc.cluster.local:80
 
     steps:
       - name: Checkout repo (com credenciais p/ push)
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0        # garante histórico completo p/ push
+          fetch-depth: 0
           persist-credentials: true
 
       - name: Install yq (no sudo)
@@ -97,30 +106,24 @@ jobs:
           GITHUB_TOKEN: ${{ '${{ secrets.GITHUB_TOKEN }}' }}
         run: |
           set -euo pipefail
-          
-          # Garante que estamos na ponta mais recente do branch
+
           git fetch origin "${{ '$BRANCH' }}"
           git checkout "${{ '$BRANCH' }}"
           git pull --rebase origin "${{ '$BRANCH' }}"
-          
-          # Atualiza a tag da imagem
+
+          # Atualiza a tag da imagem no values do ambiente
           yq -i '.image.tag = env(IMAGE_TAG)' "${{ '${VALUES_FILE}' }}"
-          
-          # Só commita/pusha se houve mudança
+
           if git diff --quiet -- "${{ '${VALUES_FILE}' }}"; then
             echo "Sem mudanças em ${{ '${VALUES_FILE}' }}; pulando push."
-            exit 0
+          else
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add "${{ '${VALUES_FILE}' }}"
+            git commit -m "chore(cd): bump image to ${{ '${IMAGE_REPO}' }}:${{ '${IMAGE_TAG}' }} [skip ci]"
+            git config --global url."https://x-access-token:${{ '${GITHUB_TOKEN}' }}@github.com/".insteadOf "https://github.com/"
+            git push origin "HEAD:${{ '${BRANCH}' }}"
           fi
-          
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "${{ '${VALUES_FILE}' }}"
-          git commit -m "chore(cd): bump image to ${{ '${IMAGE_REPO}' }}:${{ '${IMAGE_TAG}' }} [skip ci]"
-          
-          # Garante que o push use o token (útil em runners self-hosted)
-          git config --global url."https://x-access-token:${{ '${GITHUB_TOKEN}' }}@github.com/".insteadOf "https://github.com/"
-          
-          git push origin "HEAD:${{ '${BRANCH}' }}"
 
       - name: Install Argo CD CLI
         shell: bash
@@ -128,7 +131,6 @@ jobs:
           set -euo pipefail
           curl -fsSL -o /tmp/argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
           chmod +x /tmp/argocd
-          # tenta /usr/local/bin, se não puder, usa ~/.local/bin
           install -m 0755 /tmp/argocd /usr/local/bin/argocd 2>/dev/null || {
             mkdir -p "$HOME/.local/bin"
             install -m 0755 /tmp/argocd "$HOME/.local/bin/argocd"
@@ -139,43 +141,36 @@ jobs:
       - name: Argo CD login
         shell: bash
         run: |
-          # Service interno do cluster (porta 80, HTTP)
-          ARGOCD_SERVER="argocd-server.argocd.svc.cluster.local:80"
-          
-          argocd login "${{ '$ARGOCD_SERVER' }}" \
+          argocd login "${{ env.ARGOCD_SERVER }}" \
             --username admin \
             --password '${{ '${{ secrets.ARGOCD_PASSWORD }}' }}' \
             --grpc-web \
             --plaintext
-          
+
       - name: Criar Application no Argo CD (se não existir)
         shell: bash
         env:
-          APP_NAME: ${{ '${{ github.event.repository.name }}' }}            # ex: go-app-backstage-4
-          CHART_PATH: ${{ '${{ env.CHART_PATH }}' }}                        # ex: charts/go-app-backstage-4
+          APP_NAME: ${{ '${{ github.event.repository.name }}' }}
         run: |
           set -euo pipefail
-
-          # Tenta obter; se falhar, cria
           if ! argocd app get "$APP_NAME" >/dev/null 2>&1; then
             echo "Application $APP_NAME não existe. Criando…"
             argocd app create "$APP_NAME" \
               --repo "https://github.com/${{ '${{ github.repository }}' }}.git" \
-              --path "${{ '$CHART_PATH' }}" \
+              --path "${{ env.CHART_PATH }}" \
               --revision main \
+              --values "${{ env.VALUES_FILE }}" \
               --dest-server https://kubernetes.default.svc \
               --dest-namespace devops \
               --project default
           else
-            echo "Application ${{ '$APP_NAME' }} já existe."
+            echo "Application $APP_NAME já existe."
           fi
 
-      - name: Set image tag & sync
+      - name: Sync & wait
         shell: bash
         run: |
-          # Service interno do cluster (porta 80, HTTP)
-          ARGOCD_SERVER="argocd-server.argocd.svc.cluster.local:80"
-          
-          # sincroniza e espera ficar saudável
-          argocd --server "${{ '$ARGOCD_SERVER' }}" --grpc-web --plaintext app sync "${{values.app_name}}" --timeout 300
-          argocd --server "${{ '$ARGOCD_SERVER' }}" --grpc-web --plaintext app wait "${{values.app_name}}" --health --timeout 300
+          argocd --server "${{ env.ARGOCD_SERVER }}" --grpc-web --plaintext \
+            app sync "${{values.app_name}}" --timeout 300
+          argocd --server "${{ env.ARGOCD_SERVER }}" --grpc-web --plaintext \
+            app wait "${{values.app_name}}" --health --timeout 300
