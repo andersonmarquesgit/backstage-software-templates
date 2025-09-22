@@ -75,7 +75,7 @@ jobs:
       # CONSUME o output do job "ci"
       IMAGE_TAG: ${{ '${{ needs.ci.outputs.image_tag }}' }}
       CHART_PATH: charts/${{values.app_name}}
-      VALUES_FILE: charts/${{values.app_name}}/values-${{values.app_env}}.yaml
+      VALUES_FILE: values-${{values.app_env}}.yaml
       ARGOCD_SERVER: argocd-server.argocd.svc.cluster.local:80
 
     steps:
