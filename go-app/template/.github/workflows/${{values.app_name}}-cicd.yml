@@ -58,7 +58,9 @@ jobs:
           cache-to: type=gha,mode=max
   cd:
     needs: ci
-    runs-on: self-hosted
+    runs-on:
+       group: Default
+       labels: [self-hosted, Linux, X64]
     permissions:
       contents: write          # <-- necessário para commitar/pushar
     env:
