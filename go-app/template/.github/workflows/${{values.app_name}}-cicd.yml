@@ -107,22 +107,30 @@ jobs:
         run: |
           set -euo pipefail
 
-          git fetch origin "${{ '$BRANCH' }}"
-          git checkout "${{ '$BRANCH' }}"
-          git pull --rebase origin "${{ '$BRANCH' }}"
+          git fetch origin "$BRANCH"
+          git checkout "$BRANCH"
+          git pull --rebase origin "$BRANCH"
 
-          # Atualiza a tag da imagem no values do ambiente
-          yq -i '.image.tag = env(IMAGE_TAG)' "${{ '${VALUES_FILE}' }}"
+          # garante que o arquivo de values do ambiente exista
+          if [ ! -f "$CHART_PATH/$VALUES_FILE" ]; then
+            echo "Criando $CHART_PATH/$VALUES_FILE a partir de values.yaml"
+            cp "$CHART_PATH/values.yaml" "$CHART_PATH/$VALUES_FILE"
+          fi
 
-          if git diff --quiet -- "${{ '${VALUES_FILE}' }}"; then
-            echo "Sem mudanças em ${{ '${VALUES_FILE}' }}; pulando push."
+          # atualiza a tag da imagem
+          yq -i '.image.tag = env(IMAGE_TAG)' "$CHART_PATH/$VALUES_FILE"
+
+          if git diff --quiet -- "$CHART_PATH/$VALUES_FILE"; then
+            echo "Sem mudanças em $CHART_PATH/$VALUES_FILE; pulando push."
           else
             git config user.name  "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add "${{ '${VALUES_FILE}' }}"
-            git commit -m "chore(cd): bump image to ${{ '${IMAGE_REPO}' }}:${{ '${IMAGE_TAG}' }} [skip ci]"
-            git config --global url."https://x-access-token:${{ '${GITHUB_TOKEN}' }}@github.com/".insteadOf "https://github.com/"
-            git push origin "HEAD:${{ '${BRANCH}' }}"
+            git add "$CHART_PATH/$VALUES_FILE"
+            git commit -m "chore(cd): bump image to $IMAGE_REPO:$IMAGE_TAG [skip ci]"
+
+            # garante push autenticado em runner self-hosted
+            git config --global url."https://x-access-token:$GITHUB_TOKEN@github.com/".insteadOf "https://github.com/"
+            git push origin "HEAD:$BRANCH"
           fi
 
       - name: Install Argo CD CLI
