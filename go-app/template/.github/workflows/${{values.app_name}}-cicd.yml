@@ -135,6 +135,18 @@ jobs:
             echo "$HOME/.local/bin" >> "${{ '$GITHUB_PATH' }}"
           }
           argocd version --client
+
+      - name: Argo CD login
+        shell: bash
+        run: |
+          # Service interno do cluster (porta 80, HTTP)
+          ARGOCD_SERVER="argocd-server.argocd.svc.cluster.local:80"
+          
+          argocd login "${{ '$ARGOCD_SERVER' }}" \
+            --username admin \
+            --password '${{ '${{ secrets.ARGOCD_PASSWORD }}' }}' \
+            --grpc-web \
+            --plaintext
           
       - name: Criar Application no Argo CD (se não existir)
         shell: bash
@@ -158,18 +170,12 @@ jobs:
             echo "Application ${{ '$APP_NAME' }} já existe."
           fi
 
-      - name: Argo CD login + sync
+      - name: Set image tag & sync
         shell: bash
         run: |
           # Service interno do cluster (porta 80, HTTP)
           ARGOCD_SERVER="argocd-server.argocd.svc.cluster.local:80"
           
-          argocd login "${{ '$ARGOCD_SERVER' }}" \
-            --username admin \
-            --password '${{ '${{ secrets.ARGOCD_PASSWORD }}' }}' \
-            --grpc-web \
-            --plaintext
-          
           # sincroniza e espera ficar saudável
-          argocd app sync ${{values.app_name}} --timeout 300
-          argocd app wait ${{values.app_name}} --health --timeout 300
+          argocd --server "${{ '$ARGOCD_SERVER' }}" --grpc-web --plaintext app sync "${{values.app_name}}" --timeout 300
+          argocd --server "${{ '$ARGOCD_SERVER' }}" --grpc-web --plaintext app wait "${{values.app_name}}" --health --timeout 300
