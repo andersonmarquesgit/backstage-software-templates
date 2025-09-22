@@ -141,7 +141,7 @@ jobs:
       - name: Argo CD login
         shell: bash
         run: |
-          argocd login "${{ env.ARGOCD_SERVER }}" \
+          argocd login "${{ '${{ env.ARGOCD_SERVER }}' }}" \
             --username admin \
             --password '${{ '${{ secrets.ARGOCD_PASSWORD }}' }}' \
             --grpc-web \
@@ -157,9 +157,9 @@ jobs:
             echo "Application $APP_NAME não existe. Criando…"
             argocd app create "$APP_NAME" \
               --repo "https://github.com/${{ '${{ github.repository }}' }}.git" \
-              --path "${{ env.CHART_PATH }}" \
+              --path "${{ '${{ env.CHART_PATH }}' }}" \
               --revision main \
-              --values "${{ env.VALUES_FILE }}" \
+              --values "${{ '${{ env.VALUES_FILE }}' }}" \
               --dest-server https://kubernetes.default.svc \
               --dest-namespace devops \
               --project default
@@ -170,7 +170,7 @@ jobs:
       - name: Sync & wait
         shell: bash
         run: |
-          argocd --server "${{ env.ARGOCD_SERVER }}" --grpc-web --plaintext \
-            app sync "${{values.app_name}}" --timeout 300
-          argocd --server "${{ env.ARGOCD_SERVER }}" --grpc-web --plaintext \
+          argocd --server "${{ '${{ env.ARGOCD_SERVER }}' }}" --grpc-web --plaintext \
+            app sync "${{ '${{values.app_name}}' }}" --timeout 300
+          argocd --server "${{ '${{ env.ARGOCD_SERVER }}' }}" --grpc-web --plaintext \
             app wait "${{values.app_name}}" --health --timeout 300
