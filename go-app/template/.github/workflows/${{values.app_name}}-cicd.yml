@@ -171,6 +171,6 @@ jobs:
         shell: bash
         run: |
           argocd --server "${{ '${{ env.ARGOCD_SERVER }}' }}" --grpc-web --plaintext \
-            app sync "${{ '${{values.app_name}}' }}" --timeout 300
+            app sync "${{values.app_name}}" --timeout 300
           argocd --server "${{ '${{ env.ARGOCD_SERVER }}' }}" --grpc-web --plaintext \
             app wait "${{values.app_name}}" --health --timeout 300
