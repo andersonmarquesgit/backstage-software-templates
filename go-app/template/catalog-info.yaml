@@ -4,7 +4,7 @@ metadata:
   name: ${{values.app_name}}
   description: ${{values.app_desc}}
   annotations:
-    github.com/project-slug: andersonmarquesgit/${{values.app_name}}
+    github.com/project-slug: anderson-organization/${{values.app_name}}
     backstage.io/techdocs-ref: dir:.
 spec:
   type: service
